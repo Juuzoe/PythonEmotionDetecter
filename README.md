@@ -3,6 +3,8 @@
 ## Description
 This project uses DeepFace and OpenCV to perform real-time emotion detection through your webcam. The application analyses each video frame to detect facial emotions and visually highlights detected faces with a box and the emotion label. It’s an intuitive demo of AI-based emotion recognition.
 
+[![Demo Video](https://img.youtube.com/vi/LmL2S5u2oRg/0.jpg)](https://youtu.be/LmL2S5u2oRg)
+
 ## Features
 
 - **Real-Time Analysis:** Captures live video from your webcam.
