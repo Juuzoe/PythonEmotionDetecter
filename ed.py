@@ -1,3 +1,4 @@
+# Emotion Detector — real-time facial emotion recognition using DeepFace and OpenCV
 import cv2
 import requests
 import datetime
