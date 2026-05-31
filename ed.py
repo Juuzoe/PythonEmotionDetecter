@@ -7,9 +7,9 @@ import time
 import json
 import logging
 
-# ---------------------------
+
 # Logging Setup
-# ---------------------------
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
@@ -20,9 +20,9 @@ logging.basicConfig(
     ]
 )
 
-# ---------------------------
-# Linked List Data Structure
-# ---------------------------
+
+# Linked List 
+
 class EmotionNode:
     def __init__(self, timestamp, primary_emotion, score, camera_name):
         self.timestamp = timestamp
@@ -54,9 +54,9 @@ class EmotionLinkedList:
             current = current.next
         return result
 
-# ---------------------------
+
 # Microsoft Face API Setup
-# ---------------------------
+
 def get_emotions(face_img):
     """
     Sends the face image to the Microsoft Face API and returns the emotion scores.
@@ -96,9 +96,9 @@ def get_emotions(face_img):
         logging.warning("No emotion data found in API response.")
         return None
 
-# ---------------------------
+
 # Plotting Emotion Trends
-# ---------------------------
+
 def plot_emotion_trends(emotion_data):
     """
     Plots a bar chart of the frequency of primary emotions detected.

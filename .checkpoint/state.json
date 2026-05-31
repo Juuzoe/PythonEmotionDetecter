@@ -4,11 +4,20 @@
   "taskGoal": "fdsfsd",
   "status": "active",
   "createdAt": "2026-05-31T12:11:18.237Z",
-  "updatedAt": "2026-05-31T12:11:18.242Z",
+  "updatedAt": "2026-05-31T19:09:23.693Z",
   "constraints": [],
   "nonGoals": [],
   "notes": [],
   "failedAttempts": [],
   "importantFiles": [],
-  "checkpoints": []
+  "checkpoints": [
+    {
+      "id": "cp_1780254563692",
+      "createdAt": "2026-05-31T19:09:23.692Z",
+      "branch": "master",
+      "commit": "fc25632",
+      "changedFiles": [],
+      "summary": "checkpoint"
+    }
+  ]
 }
