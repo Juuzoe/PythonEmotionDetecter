@@ -185,8 +185,9 @@ map and extension points.
 * **`libEGL.so.1` or `libGLESv2.so.2` not found** (Linux): install
   `libegl1 libgles2 libgl1`. Without them AffectLab falls back to YuNet
   boxes and loses action units, blinks and head pose.
-* **No window appears / `cv2.imshow` errors**: you have `opencv-python-headless`
-  installed. Use `pip install opencv-python`, or run with `--no-hud --record`.
+* **No window appears / `cv2.imshow` errors**: a headless OpenCV wheel is
+  installed. Use `pip install opencv-contrib-python` (the build MediaPipe also
+  depends on), or run with `--no-hud --record`.
 * **Camera will not open**: try another index (`--camera 1`), close other
   apps using it, and on macOS grant the terminal camera permission.
 * **Heart rate stays on "collecting"**: it needs eight seconds of continuous
