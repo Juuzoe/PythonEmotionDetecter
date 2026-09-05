@@ -1,0 +1,60 @@
+# Changelog
+
+All notable changes to this project are documented here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
+uses [Semantic Versioning](https://semver.org/).
+
+## [2.0.0] - 2026-09-05
+
+A rewrite from a single-script webcam demo into `affectlab`, an installable,
+tested affective-computing toolkit. The scientific framing changed as much as
+the code: facial movement is described (Action Units) before it is
+interpreted (emotion labels), affect is tracked as continuous valence and
+arousal, and contactless physiology sits alongside the face.
+
+### Added
+
+- `affectlab` package with a `src/` layout, `pyproject.toml`, typed public
+  API and a console script (`affectlab live | video | image | report |
+  doctor | models`).
+- Facial Action Unit estimation (23 FACS AUs) from MediaPipe Face
+  Landmarker blendshapes, with a documented mapping table.
+- Three interchangeable emotion backends plus an ensemble: explainable
+  EMFACS-style rules (`facs`), the FER+ convolutional network via ONNX
+  Runtime (`ferplus`), and the original DeepFace pipeline (`deepface`,
+  optional extra). Every estimate carries the evidence behind it.
+- Dimensional affect on Russell's circumplex with time-aware smoothing, and
+  emotion-dynamics statistics: inertia (lag-1 autocorrelation), variability,
+  switch rate and time in state.
+- Remote photoplethysmography heart rate with POS, CHROM and GREEN methods,
+  spectral SNR quality grading, experimental RMSSD and breathing rate.
+- Blink detection from the eye aspect ratio with an adaptive baseline, blink
+  rate and PERCLOS.
+- Head pose from MediaPipe's transformation matrix, with a PnP fallback in a
+  matching frame convention.
+- Live HUD with emotion bars, circumplex trajectory, AU bars, pulse waveform,
+  vitals, dynamics, privacy blur and keyboard toggles; annotated video export.
+- Fixed-schema CSV/JSONL session recording and a `report` command producing
+  Markdown, JSON and four figures with a colour-vision-safe palette.
+- Verified model downloads (SHA-256) into a local cache; YuNet fallback when
+  MediaPipe is unavailable.
+- Test suite (unit tests on synthetic ground truth, integration tests on a
+  public-domain portrait and a synthetic pulse clip), GitHub Actions CI on
+  Python 3.10 to 3.13, `ruff`, `mypy`, pre-commit configuration.
+- Documentation: README, `docs/SCIENCE.md` (methods and references),
+  `docs/ETHICS.md` (limits, law, consent), `docs/ARCHITECTURE.md`,
+  `CONTRIBUTING.md`.
+
+### Changed
+
+- `main.py` is now a thin compatibility shim that launches `affectlab live`.
+- DeepFace is optional (`pip install "affectlab[deepface]"`) instead of the
+  only backend; the default is the FER+ and FACS ensemble.
+
+### Removed
+
+- The `tf_keras.py` shim. The DeepFace extra depends on `tf-keras` directly.
+
+## [1.0.0] - 2025-02-19
+
+- Initial release: real-time webcam emotion labels with DeepFace and OpenCV.
