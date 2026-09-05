@@ -55,6 +55,18 @@ flowchart LR
 | `palette` | Colours shared by HUD and figures, validated for colour-vision deficiency | none |
 | `cli` | `argparse` front end: `live`, `video`, `image`, `report`, `doctor`, `models` | everything, lazily |
 
+## Absent faces and gaps
+
+Every time-based statistic distinguishes "measured nothing" from "measured
+zero". When no face is detected the pipeline holds the last emotion and
+affect for `hold_seconds` (0.5 s by default), so a one-frame detection miss
+does not make the display flicker; beyond `gap_reset_seconds` (1 s) it
+discards the pulse estimate, its signal buffer and the last emotion, so a
+heart rate never outlives the person it was measured from. The blink
+detector, the affect tracker and the breathing estimator all exclude the
+gap itself from their denominators, and `summarize` computes every affect,
+vitals and action-unit statistic over face-bearing frames only.
+
 ## Timestamps and determinism
 
 MediaPipe's video mode needs strictly increasing timestamps and uses them

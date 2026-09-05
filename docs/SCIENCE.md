@@ -235,7 +235,12 @@ The **eye aspect ratio** (EAR) is the ratio of the eye's vertical to
 horizontal landmark distances [18]. It is roughly constant while the eye is
 open and falls towards zero during a blink, independent of face size. A
 blink is a closure of at least two frames and at most half a second, with a
-threshold adapted to the person's own open-eye baseline.
+threshold set at three quarters of the person's own open-eye baseline. That
+baseline is a high percentile of recent samples rather than an average of
+frames already judged open, because eyes are open most of the time: taking
+it from every sample is what lets someone whose resting ratio is low
+(narrow eyes, glasses, a downward head tilt) get a working threshold
+instead of being scored as permanently closed.
 
 **Blink rate** is a rough index of visual attention and cognitive load. In a
 study of 150 healthy people the average was about 17 blinks per minute at
@@ -248,6 +253,9 @@ was introduced in driving-simulator research [20] and found to be the most
 valid of the drowsiness measures evaluated in a US Federal Highway
 Administration study [21]. AffectLab computes it from MediaPipe's eyelid
 closure coefficients when available, else from EAR relative to baseline.
+Both statistics count only time in which the face was actually visible: an
+interval in which the face was lost is excluded rather than credited to
+whatever the eyes were doing when it came back.
 
 **Breathing rate** (experimental) is estimated from the slow vertical
 oscillation of the head, band-passed between 0.1 and 0.5 Hz, over a 30 s

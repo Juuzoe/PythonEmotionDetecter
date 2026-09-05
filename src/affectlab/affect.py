@@ -104,6 +104,12 @@ class AffectTracker:
     Raw per-frame valence/arousal is smoothed for display with an exponential
     filter. Dynamics (inertia, variability, switch rate) are computed on the
     raw series resampled to a fixed step, so smoothing does not inflate them.
+
+    Time only counts while updates arrive: an interval longer than
+    ``gap_seconds`` (the face was lost) is not credited to any state and is
+    not counted as a switch, and an interval longer than ``reset_seconds``
+    restarts the smoothers and the dynamics window. Time in state
+    accumulates over the whole session.
     """
 
     def __init__(
@@ -113,11 +119,15 @@ class AffectTracker:
         inertia_step_seconds: float = 1.0,
         min_inertia_samples: int = 10,
         min_rate_seconds: float = 10.0,
+        gap_seconds: float = 1.0,
+        reset_seconds: float = 5.0,
     ) -> None:
         self.window = float(window_seconds)
         self.step = float(inertia_step_seconds)
         self.min_inertia_samples = int(min_inertia_samples)
         self.min_rate_seconds = float(min_rate_seconds)
+        self.gap_seconds = float(gap_seconds)
+        self.reset_seconds = float(reset_seconds)
         self._valence = ExponentialSmoother(tau_seconds)
         self._arousal = ExponentialSmoother(tau_seconds)
         self._history: deque[tuple[float, float, float]] = deque()
@@ -127,14 +137,20 @@ class AffectTracker:
         self.time_in_state: dict[str, float] = dict.fromkeys(EMOTIONS, 0.0)
 
     def update(self, probabilities: Mapping[str, float], t: float) -> tuple[Affect, Dynamics]:
+        dt = None if self._last_t is None else t - self._last_t
+        if dt is not None and (dt < 0.0 or dt > self.reset_seconds):
+            self._restart()
+            dt = None
+        gap = dt is not None and dt > self.gap_seconds
+
         valence, arousal = expected_affect(probabilities)
         vs = self._valence.update(valence, t)
         ars = self._arousal.update(arousal, t)
         dominant = max(EMOTIONS, key=lambda k: float(probabilities.get(k, 0.0)))
 
-        if self._last_t is not None and t > self._last_t and self._last_dominant is not None:
-            self.time_in_state[self._last_dominant] += t - self._last_t
-        if self._last_dominant is not None and dominant != self._last_dominant:
+        if dt is not None and dt > 0.0 and not gap and self._last_dominant is not None:
+            self.time_in_state[self._last_dominant] += dt
+        if self._last_dominant is not None and dominant != self._last_dominant and not gap:
             self._switches.append(t)
 
         self._history.append((t, valence, arousal))
@@ -172,10 +188,15 @@ class AffectTracker:
             time_in_state=dict(self.time_in_state),
         )
 
-    def reset(self) -> None:
+    def _restart(self) -> None:
+        """Forget smoothing and window state after a long gap; keep time in state."""
         self._valence.reset()
         self._arousal.reset()
         self._history.clear()
         self._switches.clear()
         self._last_t = None
         self._last_dominant = None
+
+    def reset(self) -> None:
+        self._restart()
+        self.time_in_state = dict.fromkeys(EMOTIONS, 0.0)

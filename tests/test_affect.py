@@ -81,3 +81,19 @@ def test_tracker_smoothing_lags_raw() -> None:
     affect, _ = tracker.update({"happiness": 1.0}, 0.1)
     assert affect.valence == pytest.approx(CIRCUMPLEX["happiness"][0])
     assert 0.0 < affect.valence_smoothed < affect.valence
+
+
+def test_gaps_are_not_credited_and_long_gaps_restart() -> None:
+    tracker = AffectTracker(tau_seconds=1.0, gap_seconds=1.0, reset_seconds=5.0)
+    tracker.update({"happiness": 1.0}, 0.0)
+    tracker.update({"happiness": 1.0}, 1.0)
+    # A 3 s gap: not credited to any state, not counted as a switch.
+    _, dynamics = tracker.update({"sadness": 1.0}, 4.0)
+    assert dynamics.time_in_state["happiness"] == pytest.approx(1.0)
+    assert dynamics.time_in_state["sadness"] == 0.0
+    assert len(tracker._switches) == 0
+    # A 5-minute absence restarts smoothing and the window but keeps time in state.
+    affect, dynamics = tracker.update({"happiness": 1.0}, 304.0)
+    assert affect.valence_smoothed == pytest.approx(affect.valence)
+    assert dynamics.time_in_state["happiness"] == pytest.approx(1.0)
+    assert dynamics.valence_sd is None

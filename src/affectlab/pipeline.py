@@ -13,6 +13,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from types import TracebackType
+from typing import Protocol
 
 import numpy as np
 
@@ -21,6 +22,7 @@ from affectlab.affect import AffectTracker
 from affectlab.blink import BlinkDetector, BlinkState
 from affectlab.detect import YuNetDetector
 from affectlab.emotion import create_backend
+from affectlab.emotion.base import EmotionBackend
 from affectlab.facs import action_units_from_blendshapes
 from affectlab.landmarks import FaceLandmarkerEngine, LandmarkerUnavailable
 from affectlab.rppg import PulseEstimate, RppgBuffer, estimate_breathing_rate, estimate_pulse
@@ -41,6 +43,16 @@ log = logging.getLogger(__name__)
 EMOTION_CADENCE: dict[str, int] = {"facs": 1, "ferplus": 2, "ensemble": 2, "deepface": 6}
 
 
+class FaceDetector(Protocol):
+    """Anything that turns a frame into faces, largest first."""
+
+    def process(
+        self, frame_bgr: np.ndarray, timestamp_ms: int | None = None
+    ) -> list[FaceObservation]: ...
+
+    def close(self) -> None: ...
+
+
 @dataclass(slots=True)
 class PipelineConfig:
     backend: str = "ensemble"
@@ -59,15 +71,33 @@ class PipelineConfig:
     dynamics_window_seconds: float = 60.0
     breathing: bool = True
     breathing_window_seconds: float = 30.0
+    #: Keep reporting the last emotion and affect for this long after the face is lost.
+    hold_seconds: float = 0.5
+    #: A face absence longer than this discards the pulse estimate, its signal buffer,
+    #: and the last emotion, and is excluded from every time-based statistic.
+    gap_reset_seconds: float = 1.0
 
 
 class AffectPipeline:
-    def __init__(self, config: PipelineConfig | None = None, *, video: bool = True) -> None:
+    def __init__(
+        self,
+        config: PipelineConfig | None = None,
+        *,
+        video: bool = True,
+        detector: FaceDetector | None = None,
+        backend: EmotionBackend | None = None,
+    ) -> None:
+        """Build the pipeline.
+
+        ``detector`` and ``backend`` can be injected (for tests or custom
+        models); otherwise MediaPipe (with a YuNet fallback) and the
+        configured emotion backend are created.
+        """
         self.config = config or PipelineConfig()
         cfg = self.config
         self.landmarker: FaceLandmarkerEngine | None = None
-        self.detector: YuNetDetector | None = None
-        if cfg.use_landmarks:
+        self.detector: FaceDetector | None = detector
+        if self.detector is None and cfg.use_landmarks:
             try:
                 self.landmarker = FaceLandmarkerEngine(
                     num_faces=cfg.num_faces,
@@ -79,22 +109,49 @@ class AffectPipeline:
                     "%s. Falling back to YuNet face boxes: no action units, blinks or head pose.",
                     exc,
                 )
-        if self.landmarker is None:
+        if self.landmarker is None and self.detector is None:
             self.detector = YuNetDetector(score_threshold=cfg.min_detection_confidence)
 
-        self.backend = create_backend(cfg.backend)
-        self.emotion_every = max(1, cfg.emotion_every or EMOTION_CADENCE.get(self.backend.name, 2))
-        self.affect = AffectTracker(
-            tau_seconds=cfg.affect_tau_seconds, window_seconds=cfg.dynamics_window_seconds
+        self.backend: EmotionBackend = (
+            backend if backend is not None else create_backend(cfg.backend)
         )
-        self.rppg = RppgBuffer(window_seconds=cfg.rppg_window_seconds)
-        self.blinks = BlinkDetector()
+        if self.landmarker is None and self.backend.name == "facs":
+            log.warning(
+                "The facs backend needs MediaPipe blendshapes; without landmarks it produces no "
+                "emotion estimates. Use --backend ferplus or ensemble."
+            )
+        self.emotion_every = max(1, cfg.emotion_every or EMOTION_CADENCE.get(self.backend.name, 2))
+
+        self.rppg_min_seconds = float(cfg.rppg_min_seconds)
+        if cfg.rppg_window_seconds < cfg.rppg_min_seconds:
+            # The buffer drops samples older than the window, so it never quite holds a
+            # full window; requiring exactly the window would make an estimate impossible.
+            self.rppg_min_seconds = 0.9 * float(cfg.rppg_window_seconds)
+            log.warning(
+                "rPPG window (%.1f s) is shorter than the minimum signal length (%.1f s); "
+                "lowering the minimum to %.1f s. Heart-rate estimates from such short windows "
+                "are coarse.",
+                cfg.rppg_window_seconds,
+                cfg.rppg_min_seconds,
+                self.rppg_min_seconds,
+            )
+
+        self.affect = AffectTracker(
+            tau_seconds=cfg.affect_tau_seconds,
+            window_seconds=cfg.dynamics_window_seconds,
+            gap_seconds=cfg.gap_reset_seconds,
+        )
+        self.rppg = RppgBuffer(
+            window_seconds=cfg.rppg_window_seconds, gap_reset_seconds=cfg.gap_reset_seconds
+        )
+        self.blinks = BlinkDetector(gap_reset_seconds=cfg.gap_reset_seconds)
         self.last_pulse: PulseEstimate | None = None
         self.frames_with_face = 0
 
         self._breath: deque[tuple[float, float]] = deque()
         self._frame_index = 0
         self._last_t: float | None = None
+        self._last_face_t: float | None = None
         self._fps = 0.0
         self._last_emotion: EmotionEstimate | None = None
         self._last_affect: Affect | None = None
@@ -121,22 +178,11 @@ class AffectPipeline:
 
         faces = self._detect(frame_bgr, t)
         if not faces:
-            self._last_bbox = None
-            return FrameResult(
-                frame_index=index,
-                timestamp=t,
-                face=None,
-                action_units={},
-                emotion=self._last_emotion,
-                affect=self._last_affect,
-                head_pose=None,
-                vitals=self._vitals(None),
-                dynamics=self._last_dynamics,
-                fps=self._fps,
-            )
+            return self._no_face_result(index, t)
 
         face = faces[0]
         self.frames_with_face += 1
+        self._last_face_t = t
         action_units = action_units_from_blendshapes(face.blendshapes) if face.blendshapes else {}
         head_pose = self._head_pose(face, frame_bgr.shape[1], frame_bgr.shape[0])
 
@@ -190,7 +236,30 @@ class AffectPipeline:
         if self.landmarker is not None:
             return self.landmarker.process(frame_bgr, round(t * 1000.0))
         assert self.detector is not None
-        return self.detector.process(frame_bgr)
+        return self.detector.process(frame_bgr, round(t * 1000.0))
+
+    def _no_face_result(self, index: int, t: float) -> FrameResult:
+        """Result for a frame without a face: nothing stale survives a real gap."""
+        self._last_bbox = None
+        absent = float("inf") if self._last_face_t is None else t - self._last_face_t
+        if absent > self.config.gap_reset_seconds:
+            self.rppg.clear()
+            self.last_pulse = None
+            self._last_emotion = None
+            self._last_affect = None
+        hold = absent <= self.config.hold_seconds
+        return FrameResult(
+            frame_index=index,
+            timestamp=t,
+            face=None,
+            action_units={},
+            emotion=self._last_emotion if hold else None,
+            affect=self._last_affect if hold else None,
+            head_pose=None,
+            vitals=self._vitals(None),
+            dynamics=self._last_dynamics,
+            fps=self._fps,
+        )
 
     @staticmethod
     def _head_pose(face: FaceObservation, frame_w: int, frame_h: int) -> HeadPose | None:
@@ -229,7 +298,7 @@ class AffectPipeline:
             if len(self.rppg) >= 2:
                 times, values = self.rppg.arrays()
                 self.last_pulse = estimate_pulse(
-                    times, values, method=cfg.rppg_method, min_seconds=cfg.rppg_min_seconds
+                    times, values, method=cfg.rppg_method, min_seconds=self.rppg_min_seconds
                 )
             else:
                 self.last_pulse = None
@@ -248,6 +317,9 @@ class AffectPipeline:
 
     def _update_breathing(self, face: FaceObservation, t: float) -> None:
         assert face.landmarks is not None
+        if self._breath and t - self._breath[-1][0] > self.config.gap_reset_seconds:
+            self._breath.clear()
+            self._breathing = None
         nose_y = float(face.landmarks[geometry.NOSE_TIP, 1]) / max(1.0, face.bbox.size)
         self._breath.append((t, nose_y))
         cutoff = t - self.config.breathing_window_seconds

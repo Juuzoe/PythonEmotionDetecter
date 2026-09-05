@@ -95,3 +95,47 @@ def test_summary_and_report(tmp_path: Path) -> None:
     assert {"emotion_timeline.png", "circumplex.png", "vitals.png", "action_units.png"} <= set(
         figures
     )
+
+
+def test_summary_ignores_frames_without_a_face(tmp_path: Path) -> None:
+    from affectlab.report import summarize
+
+    path = tmp_path / "session.csv"
+    with SessionRecorder(path) as recorder:
+        for i in range(300):
+            result = make_result(i)
+            if i >= 150:  # a stale heart rate recorded while nobody is in front of the camera
+                result = FrameResult(
+                    i,
+                    i / 30.0,
+                    None,
+                    {},
+                    None,
+                    None,
+                    None,
+                    Vitals(heart_rate_bpm=200.0, heart_rate_quality="good"),
+                    Dynamics(),
+                    30.0,
+                )
+            recorder.write(result)
+    summary = summarize(read_session(path))
+    assert summary["face_coverage"] == pytest.approx(0.49, abs=0.02)
+    assert summary["heart_rate"] is None or summary["heart_rate"]["max"] < 100.0
+
+
+def test_report_leaves_matplotlib_state_alone(tmp_path: Path) -> None:
+    matplotlib = pytest.importorskip("matplotlib")
+    from affectlab.report import build_report
+
+    before = dict(matplotlib.rcParams)
+    path = tmp_path / "session.csv"
+    with SessionRecorder(path) as recorder:
+        for i in range(600):
+            recorder.write(make_result(i))
+    build_report(path, tmp_path / "out")
+    changed = {
+        k: (before[k], matplotlib.rcParams[k])
+        for k in before
+        if before[k] != matplotlib.rcParams[k]
+    }
+    assert changed == {}
