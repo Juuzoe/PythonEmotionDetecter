@@ -117,19 +117,34 @@ def skin_polygons(landmarks: np.ndarray) -> list[np.ndarray]:
 
 
 def polygon_mean_rgb(frame_bgr: np.ndarray, polygons: list[np.ndarray]) -> np.ndarray | None:
-    """Mean colour inside the union of ``polygons``, as [R, G, B]."""
+    """Mean colour inside the union of ``polygons``, as [R, G, B].
+
+    The mask is rasterised only over the polygons' bounding box, not the
+    whole frame, so the cost scales with the face rather than the image.
+    """
     h, w = frame_bgr.shape[:2]
-    mask = np.zeros((h, w), dtype=np.uint8)
+    point_sets: list[np.ndarray] = []
     for poly in polygons:
-        pts = np.round(
-            np.asarray(poly, dtype=float).reshape(-1, poly.shape[-1] if poly.ndim else 2)[:, :2]
-        )
-        if len(pts) < 3:
+        arr = np.asarray(poly, dtype=float)
+        if arr.ndim != 2 or arr.shape[0] < 3 or arr.shape[1] < 2:
             continue
-        cv2.fillPoly(mask, [pts.astype(np.int32).reshape(-1, 1, 2)], 255)
+        point_sets.append(np.round(arr[:, :2]).astype(np.int32))
+    if not point_sets:
+        return None
+    every = np.vstack(point_sets)
+    x0 = int(max(0, every[:, 0].min()))
+    y0 = int(max(0, every[:, 1].min()))
+    x1 = int(min(w, every[:, 0].max() + 1))
+    y1 = int(min(h, every[:, 1].max() + 1))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    mask = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
+    offset = np.array([x0, y0], dtype=np.int32)
+    for pts in point_sets:
+        cv2.fillPoly(mask, [(pts - offset).reshape(-1, 1, 2)], 255)
     if not mask.any():
         return None
-    b, g, r, _ = cv2.mean(frame_bgr, mask=mask)
+    b, g, r, _ = cv2.mean(frame_bgr[y0:y1, x0:x1], mask=mask)
     return np.array([r, g, b], dtype=float)
 
 

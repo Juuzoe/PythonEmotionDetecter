@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 uses [Semantic Versioning](https://semver.org/).
 
+## [2.0.1] - 2026-09-05
+
+### Fixed
+
+- The blink detector could lock into a permanent "eyes closed" state for
+  people whose open-eye aspect ratio sits below the default threshold,
+  because its baseline only learned from frames already judged open. The
+  baseline is now a high percentile of all recent samples.
+- Heart rate, emotion and affect were carried indefinitely after the face
+  left the frame and recorded against faceless frames; they now expire after
+  a short hold, and report statistics ignore frames without a face.
+- PERCLOS, blink rate and time-in-state attributed a whole face-loss gap to
+  the state of a single frame; gaps are now excluded from every time-based
+  statistic, and long gaps restart the affect smoothers.
+- `affectlab image` crashed on an assertion when the emotion backend could
+  not produce an estimate (for example `--backend facs` without landmarks).
+- Annotated video output silently dropped frames after the panel was
+  toggled, never checked that the writer opened, and used the camera's
+  nominal frame rate instead of the achieved one.
+- A heart-rate window shorter than the minimum signal length could never
+  produce an estimate; the minimum now follows the window, with a warning.
+- Report figures no longer change the caller's matplotlib backend or style.
+- The rPPG skin mask is rasterised over the face region instead of the
+  whole frame.
+
 ## [2.0.0] - 2026-09-05
 
 A rewrite from a single-script webcam demo into `affectlab`, an installable,

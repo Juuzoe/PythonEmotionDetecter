@@ -145,3 +145,13 @@ def test_forehead_polygon_stays_below_hairline() -> None:
     assert poly[:, 1].min() == pytest.approx(150.0)  # halfway to the hairline
     assert poly[:, 1].max() == pytest.approx(190.0)  # slightly above the brows
     assert len(skin_polygons(lm)) == 3
+
+
+def test_polygon_mean_rgb_handles_partly_outside_and_degenerate_polygons() -> None:
+    frame = np.zeros((50, 50, 3), dtype=np.uint8)
+    frame[:, :, 1] = 200
+    outside = np.array([[-20.0, -20.0], [30.0, -20.0], [30.0, 30.0], [-20.0, 30.0]])
+    rgb = polygon_mean_rgb(frame, [outside])
+    assert rgb is not None and np.allclose(rgb, [0, 200, 0])
+    assert polygon_mean_rgb(frame, [np.array([[1.0, 1.0], [2.0, 2.0]])]) is None
+    assert polygon_mean_rgb(frame, [np.array([[60.0, 60.0], [70.0, 60.0], [70.0, 70.0]])]) is None

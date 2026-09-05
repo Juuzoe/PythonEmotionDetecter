@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "affectlab"
-version = "2.0.0"
+version = "2.0.1"
 description = "Real-time affective computing from a webcam: FACS action units, dimensional affect, contactless heart rate and blink dynamics."
 readme = "README.md"
 license = "MIT"
