@@ -28,6 +28,9 @@ uses [Semantic Versioning](https://semver.org/).
 - Report figures no longer change the caller's matplotlib backend or style.
 - The rPPG skin mask is rasterised over the face region instead of the
   whole frame.
+- `--models-dir` set the model cache path for the rest of the process rather
+  than for the command, so calling `main()` from Python (as the test suite
+  does) hid the real cache from everything that ran afterwards.
 
 ## [2.0.0] - 2026-09-05
 

@@ -80,6 +80,10 @@ MODELS: dict[str, ModelSpec] = {
 
 ProgressCallback = Callable[[int, int], None]
 
+#: Environment variables that relocate the model cache.
+MODELS_DIR_ENV = "AFFECTLAB_MODELS_DIR"
+HOME_ENV = "AFFECTLAB_HOME"
+
 
 def models_dir() -> Path:
     """Directory that holds cached models.
@@ -87,10 +91,10 @@ def models_dir() -> Path:
     ``$AFFECTLAB_MODELS_DIR`` names it exactly; otherwise it is
     ``$AFFECTLAB_HOME/models`` or ``~/.cache/affectlab/models``.
     """
-    exact = os.environ.get("AFFECTLAB_MODELS_DIR")
+    exact = os.environ.get(MODELS_DIR_ENV)
     if exact:
         return Path(exact).expanduser()
-    home = os.environ.get("AFFECTLAB_HOME")
+    home = os.environ.get(HOME_ENV)
     base = Path(home).expanduser() if home else Path.home() / ".cache" / "affectlab"
     return base / "models"
 

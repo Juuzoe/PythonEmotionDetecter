@@ -19,6 +19,7 @@ from affectlab import __version__
 from affectlab.emotion import BACKENDS, BackendUnavailable
 from affectlab.models import (
     MODELS,
+    MODELS_DIR_ENV,
     ModelError,
     cached_models,
     ensure_model,
@@ -553,9 +554,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s %(name)s: %(message)s",
     )
-    if args.models_dir:
-        os.environ["AFFECTLAB_MODELS_DIR"] = str(Path(args.models_dir).expanduser())
     _quiet_native_logs()
+    # --models-dir is passed to the model registry through the environment, but only for
+    # the duration of this command: main() is importable and callable, and leaving the
+    # variable set would hide the default cache from everything that runs afterwards.
+    previous = os.environ.get(MODELS_DIR_ENV)
+    if args.models_dir:
+        os.environ[MODELS_DIR_ENV] = str(Path(args.models_dir).expanduser())
     try:
         return int(args.func(args))
     except (BackendUnavailable, ModelError) as exc:
@@ -569,6 +574,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise
         print(f"error: {type(exc).__name__}: {exc} (run with -v for a traceback)", file=sys.stderr)
         return 1
+    finally:
+        if args.models_dir:
+            if previous is None:
+                os.environ.pop(MODELS_DIR_ENV, None)
+            else:
+                os.environ[MODELS_DIR_ENV] = previous
 
 
 if __name__ == "__main__":  # pragma: no cover
