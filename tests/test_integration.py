@@ -82,3 +82,17 @@ def test_cli_image_command(astronaut_path: Path, tmp_path: Path) -> None:
     out = tmp_path / "annotated.png"
     assert main(["image", str(astronaut_path), "--save", str(out), "--backend", "ferplus"]) == 0
     assert out.exists() and out.stat().st_size > 10_000
+
+
+def test_cli_image_without_landmarks_and_without_emotion(
+    astronaut_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The facs backend cannot run on YuNet boxes; the command must still report the face."""
+    from affectlab.cli import main
+
+    _require_models()
+    if not is_cached("yunet"):
+        pytest.skip("yunet model not downloaded")
+    assert main(["image", str(astronaut_path), "--no-landmarks", "--backend", "facs"]) == 0
+    out = capsys.readouterr().out
+    assert "source: yunet" in out and "not available" in out

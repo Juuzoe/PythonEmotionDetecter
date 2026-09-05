@@ -85,6 +85,23 @@ def pixelate(img: np.ndarray, box: BBox, blocks: int = 12) -> None:
     )
 
 
+def fit_canvas(canvas: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    """Pad (bottom/right, background colour) or crop ``canvas`` to ``size`` = (width, height).
+
+    Video writers silently drop frames whose size differs from the first one,
+    so every frame handed to a writer goes through this.
+    """
+    width, height = size
+    h, w = canvas.shape[:2]
+    if (w, h) == (width, height):
+        return canvas
+    out = np.empty((height, width, 3), dtype=np.uint8)
+    out[:] = BG
+    ch, cw = min(h, height), min(w, width)
+    out[:ch, :cw] = canvas[:ch, :cw]
+    return out
+
+
 @dataclass(slots=True)
 class HudOptions:
     show_panel: bool = True
@@ -101,6 +118,13 @@ class Hud:
         self.options = options or HudOptions()
         self.trajectory: deque[tuple[float, float]] = deque(maxlen=trajectory_length)
 
+    def canvas_size(self, frame_shape: tuple[int, ...]) -> tuple[int, int]:
+        """(width, height) of the rendered canvas for a frame of ``frame_shape``, even-sized."""
+        h, w = int(frame_shape[0]), int(frame_shape[1])
+        if self.options.show_panel:
+            w, h = w + PANEL_WIDTH, max(h, MIN_PANEL_HEIGHT)
+        return w + (w % 2), h + (h % 2)
+
     def render(
         self,
         frame_bgr: np.ndarray,
@@ -112,6 +136,8 @@ class Hud:
         canvas = frame_bgr.copy()
         if result.face is not None:
             self._draw_face(canvas, result)
+        elif result.emotion is None and self.options.show_panel is False:
+            text(canvas, "no face", (10, 24), 0.6, MUTED, 1)
         if result.affect is not None:
             self.trajectory.append((result.affect.valence_smoothed, result.affect.arousal_smoothed))
         if recording:
@@ -170,23 +196,24 @@ class Hud:
     ) -> np.ndarray:
         panel = np.full((height, PANEL_WIDTH, 3), BG, dtype=np.uint8)
         x0, y = 14, 24
-        compact = height < 640
 
         text(panel, "AffectLab", (x0, y), 0.7, FG, 2)
-        backend = result.emotion.backend if result.emotion else "-"
+        backend = (
+            result.emotion.backend
+            if result.emotion
+            else ("no face" if result.face is None else "-")
+        )
         fps = f"{result.fps:4.1f} fps  " if result.fps > 0 else ""
         text(panel, f"{fps}{backend}", (x0 + 130, y), 0.45, MUTED)
         y += 14
         cv2.line(panel, (x0, y), (PANEL_WIDTH - x0, y), GRID, 1)
         y += 18
 
-        y = self._section_emotion(panel, x0, y, result, compact)
-        y = self._section_affect(panel, x0, y, result, compact)
-        if not compact:
-            y = self._section_action_units(panel, x0, y, result)
-        y = self._section_vitals(panel, x0, y, result, pulse, compact)
-        if not compact:
-            y = self._section_dynamics(panel, x0, y, result)
+        y = self._section_emotion(panel, x0, y, result)
+        y = self._section_affect(panel, x0, y, result)
+        y = self._section_action_units(panel, x0, y, result)
+        y = self._section_vitals(panel, x0, y, result, pulse)
+        y = self._section_dynamics(panel, x0, y, result)
 
         if self.options.show_help and height - y > 40:
             hy = height - 12
@@ -199,13 +226,11 @@ class Hud:
         text(panel, title, (x, y), 0.42, MUTED)
         return y + 12
 
-    def _section_emotion(
-        self, panel: np.ndarray, x: int, y: int, result: FrameResult, compact: bool
-    ) -> int:
+    def _section_emotion(self, panel: np.ndarray, x: int, y: int, result: FrameResult) -> int:
         y = self._heading(panel, x, y, "EMOTION")
         probs = result.emotion.probabilities if result.emotion else {}
         dominant = result.emotion.dominant if result.emotion else None
-        row_h = 13 if compact else 16
+        row_h = 16
         for label in EMOTIONS:
             p = float(probs.get(label, 0.0))
             color = EMOTION_COLORS[label] if label == dominant else MUTED
@@ -213,18 +238,16 @@ class Hud:
             bar(panel, x + 88, y, 170, row_h - 5, p, color)
             text(panel, f"{p:4.0%}", (x + 266, y + 9), 0.4, FG if label == dominant else MUTED)
             y += row_h
-        if result.emotion and result.emotion.evidence and not compact:
+        if result.emotion and result.emotion.evidence:
             items = list(result.emotion.evidence.items())[:4]
             evidence = "  ".join(f"{k} {v:.2f}" for k, v in items)
             text(panel, evidence[:52], (x, y + 8), 0.36, MUTED)
-            y += 14
+        y += 14
         return y + 10
 
-    def _section_affect(
-        self, panel: np.ndarray, x: int, y: int, result: FrameResult, compact: bool
-    ) -> int:
+    def _section_affect(self, panel: np.ndarray, x: int, y: int, result: FrameResult) -> int:
         y = self._heading(panel, x, y, "AFFECT  (Russell circumplex)")
-        size = 120 if compact else 150
+        size = 150
         cx, cy = x + size // 2, y + size // 2
         r = size // 2
         cv2.circle(panel, (cx, cy), r, GRID, 1, cv2.LINE_AA)
@@ -273,7 +296,6 @@ class Hud:
         y: int,
         result: FrameResult,
         pulse: PulseEstimate | None,
-        compact: bool,
     ) -> int:
         y = self._heading(panel, x, y, "VITALS  (contactless, indicative)")
         v = result.vitals
@@ -287,7 +309,7 @@ class Hud:
             if v.signal_seconds > 0:
                 text(panel, f"{v.signal_seconds:4.1f} s of signal", (x + 130, y + 22), 0.42, MUTED)
         y += 30
-        if pulse is not None and len(pulse.pulse) > 4 and not compact:
+        if pulse is not None and len(pulse.pulse) > 4:
             self._waveform(panel, x, y, PANEL_WIDTH - 2 * x, 34, pulse)
             y += 40
         lines = []

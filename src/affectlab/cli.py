@@ -11,6 +11,7 @@ import time
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
 
@@ -24,6 +25,14 @@ from affectlab.models import (
     model_path,
 )
 from affectlab.rppg import METHODS
+
+if TYPE_CHECKING:
+    import numpy as np
+
+    from affectlab.hud import Hud
+    from affectlab.pipeline import PipelineConfig
+    from affectlab.recorder import SessionRecorder
+    from affectlab.sources import FrameSource
 
 log = logging.getLogger("affectlab")
 
@@ -150,7 +159,7 @@ def build_parser() -> argparse.ArgumentParser:
 # ----------------------------------------------------------------------------- helpers
 
 
-def _pipeline_config(args: argparse.Namespace):
+def _pipeline_config(args: argparse.Namespace) -> PipelineConfig:
     from affectlab.pipeline import PipelineConfig
 
     return PipelineConfig(
@@ -163,7 +172,7 @@ def _pipeline_config(args: argparse.Namespace):
     )
 
 
-def _hud(args: argparse.Namespace):
+def _hud(args: argparse.Namespace) -> Hud:
     from affectlab.hud import Hud, HudOptions
 
     return Hud(
@@ -195,9 +204,124 @@ def _quiet_native_logs() -> None:
         pass
 
 
+class _VideoOutput:
+    """Annotated-video writer that is robust to the things that silently break VideoWriter.
+
+    Every frame is fitted to the size of the first one (a writer drops frames of any other
+    size without raising), the writer is checked to have opened, and for live sources the
+    frame rate is measured over the first seconds instead of trusting the camera's nominal
+    value, so the file plays back in real time.
+    """
+
+    def __init__(self, path: str, source_fps: float, measure_fps: bool) -> None:
+        self.path = path
+        self.source_fps = float(source_fps)
+        self.measure_fps = measure_fps
+        self.ok = True
+        self.frames_written = 0
+        self._writer: Any = None
+        self._size: tuple[int, int] | None = None
+        self._pending: list[tuple[float, np.ndarray]] = []
+
+    def write(self, canvas: np.ndarray, t: float) -> None:
+        from affectlab.hud import fit_canvas
+
+        if self._size is None:
+            h, w = canvas.shape[:2]
+            self._size = (w + w % 2, h + h % 2)
+        fitted = fit_canvas(canvas, self._size)
+        if self._writer is None and self.measure_fps:
+            self._pending.append((t, fitted))
+            span = t - self._pending[0][0]
+            if len(self._pending) < 90 and span < 3.0:
+                return
+            self._open(self._measured_fps())
+            self._flush()
+            return
+        if self._writer is None:
+            self._open(self.source_fps)
+        self._write(fitted)
+
+    def _measured_fps(self) -> float:
+        if len(self._pending) < 2:
+            return self.source_fps
+        span = self._pending[-1][0] - self._pending[0][0]
+        if span <= 0:
+            return self.source_fps
+        return float(min(120.0, max(1.0, (len(self._pending) - 1) / span)))
+
+    def _open(self, fps: float) -> None:
+        import cv2
+
+        assert self._size is not None
+        writer = cv2.VideoWriter(self.path, cv2.VideoWriter.fourcc(*"mp4v"), fps, self._size)
+        if not writer.isOpened():
+            self.ok = False
+            log.error("could not open %s for writing (unsupported path or codec)", self.path)
+        self._writer = writer
+
+    def _flush(self) -> None:
+        for _, frame in self._pending:
+            self._write(frame)
+        self._pending.clear()
+
+    def _write(self, frame: np.ndarray) -> None:
+        if self._writer is not None and self._writer.isOpened():
+            self._writer.write(frame)
+            self.frames_written += 1
+
+    def close(self) -> bool:
+        if self._writer is None and self._pending:
+            self._open(self._measured_fps())
+            self._flush()
+        if self._writer is not None:
+            self._writer.release()
+        return self.ok and self.frames_written > 0
+
+
+def _handle_key(
+    key: int,
+    hud: Hud,
+    canvas: np.ndarray,
+    recorder: SessionRecorder | None,
+    output_locked: bool,
+) -> SessionRecorder | None:
+    """Apply a keyboard toggle; returns the (possibly new or closed) recorder."""
+    import cv2
+
+    from affectlab.recorder import SessionRecorder
+
+    if key == ord("l"):
+        hud.options.show_landmarks = not hud.options.show_landmarks
+    elif key == ord("o"):
+        hud.options.show_rois = not hud.options.show_rois
+    elif key == ord("p"):
+        if output_locked:
+            print("the side panel is fixed while --output is being written", file=sys.stderr)
+        else:
+            hud.options.show_panel = not hud.options.show_panel
+    elif key == ord("b"):
+        hud.options.blur_face = not hud.options.blur_face
+    elif key == ord("h"):
+        hud.options.show_help = not hud.options.show_help
+    elif key == ord("s"):
+        name = f"affectlab_snapshot_{_timestamp()}.png"
+        cv2.imwrite(name, canvas)
+        print(f"saved {name}", file=sys.stderr)
+    elif key == ord("r"):
+        if recorder is None:
+            path = f"affectlab_session_{_timestamp()}.csv"
+            print(f"recording to {path}", file=sys.stderr)
+            return SessionRecorder(path)
+        recorder.close()
+        print(f"stopped recording ({recorder.rows} rows)", file=sys.stderr)
+        return None
+    return recorder
+
+
 def _run_stream(
     args: argparse.Namespace,
-    source,
+    source: FrameSource,
     *,
     show: bool,
     mirror: bool = False,
@@ -210,8 +334,8 @@ def _run_stream(
     from affectlab.recorder import SessionRecorder
 
     hud = _hud(args)
-    recorder = SessionRecorder(args.record) if args.record else None
-    writer: cv2.VideoWriter | None = None
+    recorder: SessionRecorder | None = SessionRecorder(args.record) if args.record else None
+    output = _VideoOutput(args.output, source.fps, source.is_camera) if args.output else None
     window = "AffectLab"
     processed = 0
     started = time.perf_counter()
@@ -224,51 +348,30 @@ def _run_stream(
                 processed += 1
                 if recorder is not None:
                     recorder.write(result)
-                if show or args.output:
+                if show or output is not None:
                     canvas = hud.render(
                         frame, result, pipeline.last_pulse, recording=recorder is not None
                     )
-                    if args.output:
-                        if writer is None:
-                            fourcc = cv2.VideoWriter.fourcc(*"mp4v")
-                            writer = cv2.VideoWriter(
-                                args.output, fourcc, source.fps, (canvas.shape[1], canvas.shape[0])
-                            )
-                        writer.write(canvas)
+                    if output is not None:
+                        output.write(canvas, t)
                     if show:
                         cv2.imshow(window, canvas)
                         key = cv2.waitKey(1) & 0xFF
                         if key in (ord("q"), 27):
                             break
-                        if key == ord("l"):
-                            hud.options.show_landmarks = not hud.options.show_landmarks
-                        elif key == ord("o"):
-                            hud.options.show_rois = not hud.options.show_rois
-                        elif key == ord("p"):
-                            hud.options.show_panel = not hud.options.show_panel
-                        elif key == ord("b"):
-                            hud.options.blur_face = not hud.options.blur_face
-                        elif key == ord("h"):
-                            hud.options.show_help = not hud.options.show_help
-                        elif key == ord("s"):
-                            name = f"affectlab_snapshot_{_timestamp()}.png"
-                            cv2.imwrite(name, canvas)
-                            print(f"saved {name}", file=sys.stderr)
-                        elif key == ord("r"):
-                            if recorder is None:
-                                path = f"affectlab_session_{_timestamp()}.csv"
-                                recorder = SessionRecorder(path)
-                                print(f"recording to {path}", file=sys.stderr)
-                            else:
-                                recorder.close()
-                                print(f"stopped recording ({recorder.rows} rows)", file=sys.stderr)
-                                recorder = None
+                        if key != 255:
+                            new_recorder = _handle_key(
+                                key, hud, canvas, recorder, output is not None
+                            )
+                            assert new_recorder is None or isinstance(new_recorder, SessionRecorder)
+                            recorder = new_recorder
                 elif processed % 100 == 0:
                     elapsed = time.perf_counter() - started
                     print(
                         f"\r{processed} frames  {processed / max(elapsed, 1e-6):5.1f} fps",
                         end="",
                         file=sys.stderr,
+                        flush=True,
                     )
                 if max_seconds is not None and t >= max_seconds:
                     break
@@ -277,15 +380,17 @@ def _run_stream(
     finally:
         if not show and processed >= 100:
             print(file=sys.stderr)
-        if writer is not None:
-            writer.release()
-            print(f"wrote {args.output}", file=sys.stderr)
+        if output is not None:
+            if output.close():
+                print(f"wrote {args.output} ({output.frames_written} frames)", file=sys.stderr)
+            else:
+                print(f"error: could not write {args.output}", file=sys.stderr)
         if recorder is not None:
             recorder.close()
             print(f"recorded {recorder.rows} rows to {recorder.path}", file=sys.stderr)
         if show:
             cv2.destroyAllWindows()
-    return 0
+    return 0 if output is None or output.ok else 1
 
 
 # ----------------------------------------------------------------------------- commands
@@ -294,10 +399,16 @@ def _run_stream(
 def cmd_live(args: argparse.Namespace) -> int:
     from affectlab.sources import FrameSource
 
-    with FrameSource(args.camera, width=args.width, height=args.height) as source:
+    if args.no_hud and not args.record and not args.output:
         print(
-            f"camera {args.camera}: {source.width}x{source.height} @ {source.fps:.0f} fps. "
-            "Press q to quit, h for help.",
+            "note: --no-hud without --record or --output analyses frames but shows and saves "
+            "nothing; press Ctrl-C to stop",
+            file=sys.stderr,
+        )
+    with FrameSource(args.camera, width=args.width, height=args.height) as source:
+        hint = "Press Ctrl-C to stop." if args.no_hud else "Press q to quit, h for help."
+        print(
+            f"camera {args.camera}: {source.width}x{source.height} @ {source.fps:.0f} fps. {hint}",
             file=sys.stderr,
         )
         return _run_stream(
@@ -335,10 +446,12 @@ def cmd_image(args: argparse.Namespace) -> int:
         elif result.face is None:
             print("no face found")
         else:
-            assert result.emotion is not None
             print(f"face: {result.face.bbox.as_tuple()}  source: {result.face.source}")
-            for label, p in result.emotion.top(3):
-                print(f"  {label:10s} {p:5.1%}")
+            if result.emotion is None:
+                print("  emotion: not available (the facs backend needs MediaPipe landmarks)")
+            else:
+                for label, p in result.emotion.top(3):
+                    print(f"  {label:10s} {p:5.1%}")
             if result.affect:
                 print(f"valence {result.affect.valence:+.2f}  arousal {result.affect.arousal:+.2f}")
             if result.head_pose:
@@ -349,7 +462,7 @@ def cmd_image(args: argparse.Namespace) -> int:
                 print("action units:")
                 for line in aus[:8]:
                     print(f"  {line}")
-            if result.emotion.evidence:
+            if result.emotion is not None and result.emotion.evidence:
                 print(f"evidence: {result.emotion.evidence}")
         if args.save:
             canvas = _hud(args).render(image, result, None)
