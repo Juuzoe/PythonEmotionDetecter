@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.eggs/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# AffectLab outputs
+affectlab_session_*.csv
+affectlab_session_*.jsonl
+affectlab_snapshot_*.png
+*.affectlab.csv
+*.affectlab.jsonl
+reports/
+
+# Models are cached in ~/.cache/affectlab, never in the repo
+*.task
+*.onnx
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
